@@ -30,9 +30,13 @@ UniprocessFuture <- function(expr = NULL, envir = parent.frame(), substitute = F
   }
   
   gp <- NULL
+  t0 <- Sys.time()
  
   f <- Future(expr = expr, envir = envir, substitute = FALSE, lazy = lazy, asynchronous = FALSE, local = local, globals = globals, packages = packages, version = "1.8", ...)
   f$.callResult <- TRUE
+  
+  journal_append(f, step = "find_globals_and_packages", time = t0)
+  
   structure(f, class = c("UniprocessFuture", class(f)))
 }
 
@@ -63,6 +67,8 @@ run.UniprocessFuture <- function(future, ...) {
     for (name in names(globals)) {
       envir[[name]] <- globals[[name]]
     }
+    
+    journal_append(future, step = "globals_copied")
   }
 
   ## Run future
@@ -95,6 +101,8 @@ result.UniprocessFuture <- function(future, ...) {
     run(future)
     future$earlySignal <- earlySignal
   }
+
+  journal_append(future, step = "results_gathered")
 
   result <- future$result
   if (inherits(result, "FutureResult")) return(result)

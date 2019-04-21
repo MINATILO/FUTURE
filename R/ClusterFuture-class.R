@@ -59,6 +59,7 @@ ClusterFuture <- function(expr = NULL, envir = parent.frame(), substitute = FALS
     stop("Argument 'workers' is not of class 'cluster': ", paste(sQuote(class(workers)), collapse = ", "))
   }
   stop_if_not(length(workers) > 0)
+  t1 <- Sys.time()
 
   ## Attached workers' session information, unless already done.
   ## FIXME: We cannot do this here, because it introduces a race condition
@@ -74,6 +75,7 @@ ClusterFuture <- function(expr = NULL, envir = parent.frame(), substitute = FALS
     stop_if_not(length(name) > 0, nzchar(name))
     attr(workers, "name") <- name
   }
+  t2 <- Sys.time()
 
   ## Global objects
   gp <- getGlobalsAndPackages(expr, envir = envir, persistent = persistent, globals = globals)
@@ -81,9 +83,15 @@ ClusterFuture <- function(expr = NULL, envir = parent.frame(), substitute = FALS
   packages <- unique(c(packages, gp$packages))
   expr <- gp$expr
   gp <- NULL
+  t3 <- Sys.time()
 
   f <- MultiprocessFuture(expr = expr, envir = envir, substitute = FALSE, globals = globals, packages = packages, local = local, gc = gc, persistent = persistent, workers = workers, node = NA_integer_, version = "1.8", ...)
   f$.callResult <- TRUE
+  
+  journal_append(f, step = "workers_created", time = t1)
+  journal_append(f, step = "workers_named", time = t2)
+  journal_append(f, step = "find_globals_and_packages", time = t3)
+  
   structure(f, class = c("ClusterFuture", class(f)))
 }
 
@@ -122,6 +130,8 @@ run.ClusterFuture <- function(future, ...) {
   ## Cluster node to use
   cl <- workers[node_idx]
 
+  journal_append(future, step = "worker_identified")
+
 
   ## WORKAROUND: When running covr::package_coverage(), the
   ## package being tested may actually not be installed in
@@ -141,6 +151,7 @@ run.ClusterFuture <- function(future, ...) {
   ##     local, e.g. local({ a <<- 1 }).
   if (!persistent) {
     clusterCall(cl, fun = grmall)
+    journal_append(future, step = "cleaned_up_worker")
   }
 
 
@@ -154,6 +165,7 @@ run.ClusterFuture <- function(future, ...) {
                       length(packages), hpaste(sQuote(packages)), node_idx)
 
     clusterCall(cl, fun = requirePackages, packages)
+    journal_append(future, step = "packages_attached_on_worker")
 
     if (debug) mdebugf("Attaching %d packages (%s) on cluster node #%d ... DONE",
                       length(packages), hpaste(sQuote(packages)), node_idx)
@@ -184,6 +196,7 @@ run.ClusterFuture <- function(future, ...) {
       if (debug) mdebugf("Exporting %s (%s) to cluster node #%d ... DONE", sQuote(name), size, node_idx)
       value <- NULL
     }
+    journal_append(future, step = "globals_exported_to_worker")
     if (debug) mdebugf("Exporting %d global objects (%s) to cluster node #%d ... DONE", length(globals), total_size, node_idx)
   }
   ## Not needed anymore
@@ -193,8 +206,12 @@ run.ClusterFuture <- function(future, ...) {
   ## Add to registry
   FutureRegistry(reg, action = "add", future = future, earlySignal = FALSE)
 
+  journal_append(future, step = "future_added_to_registry")
+
   ## (iv) Launch future
   sendCall(cl[[1L]], fun = geval, args = list(expr))
+  
+  journal_append(future, step = "future_launched")
 
   future$state <- 'running'
 
@@ -248,6 +265,7 @@ resolved.ClusterFuture <- function(x, timeout = 0.2, ...) {
     value(x, stdout = FALSE, signal = FALSE)
     res <- TRUE
   }
+  journal_append(x, step = "future_queuried")
 
   ## Signal conditions early? (happens only iff requested)
   if (res) signalEarly(x, ...)
@@ -301,6 +319,7 @@ result.ClusterFuture <- function(future, ...) {
     result <- recvResult(node)
     TRUE
   }, simpleError = function(ex) ex)
+  journal_append(future, step = "result_received")
 
   if (debug) mdebugf("- class(result): %s", class(result)[1])
 
@@ -381,10 +400,15 @@ result.ClusterFuture <- function(future, ...) {
   ## Remove from registry
   FutureRegistry(reg, action = "remove", future = future, earlySignal = FALSE)
 
+  journal_append(future, step = "future_removed_from_registry")
+
   ## Garbage collect cluster worker?
   if (future$gc) {
     ## Cleanup global environment while at it
-    if (!future$persistent) clusterCall(cl[1], fun = grmall)
+    if (!future$persistent) {
+      clusterCall(cl[1], fun = grmall)
+      journal_append(future, step = "cleaned_up_worker")
+    }
     
     ## WORKAROUND: Need to clear cluster worker before garbage collection,
     ## cf. https://github.com/HenrikBengtsson/Wishlist-for-R/issues/27
@@ -393,6 +417,8 @@ result.ClusterFuture <- function(future, ...) {
     clusterCall(cl[1], function() "future-clearing-cluster-worker")
     
     clusterCall(cl[1], gc, verbose = FALSE, reset = FALSE)
+
+    journal_append(future, step = "worker_gc")
   }
 
   result

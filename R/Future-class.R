@@ -145,6 +145,8 @@ Future <- function(expr = NULL, envir = parent.frame(), substitute = FALSE, stdo
 
   ## Additional named arguments
   for (key in names(args)) core[[key]] <- args[[key]]
+
+  core$.journal <- data.frame(step = "core_created", time = Sys.time())
   
   structure(core, class = c("Future", class(core)))
 }
@@ -264,6 +266,8 @@ assertOwner <- function(future, ...) {
   if (!identical(future$owner, session_uuid())) {
     stop(FutureError(sprintf("Invalid usage of futures: A future whose value has not yet been collected can only be queried by the R process (%s) that created it, not by any other R processes (%s): %s", hpid(future$owner), hpid(session_uuid()), hexpr(future$expr)), future = future))
   }
+
+  journal_append(future, step = "assert_owner")
 
   invisible(future)
 }
@@ -417,10 +421,11 @@ value.Future <- function(future, stdout = TRUE, signal = TRUE, ...) {
 
   value <- result$value
 
-  ## Output captured standard output?
+  ## Relay captured standard output?
   if (stdout && length(result$stdout) > 0 &&
       inherits(result$stdout, "character")) {
     cat(paste(result$stdout, collapse = "\n"))
+    journal_append(future, step = "relay_stdout")
   }
   
   ## Signal captured conditions?
@@ -645,7 +650,9 @@ getExpression.Future <- function(future, local = future$local, stdout = future$s
   if (getOption("future.debug", FALSE)) mprint(expr)
 
 ##  mdebug("getExpression() ... DONE")
-  
+
+  journal_append(future, step = "get_expression")
+
   expr
 } ## getExpression()
 
