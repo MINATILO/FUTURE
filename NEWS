@@ -1,6 +1,38 @@
 Package: future
 ===============
 
+Version: 1.21.0-9000 [2021-01-19]
+
+SIGNIFICANT CHANGES:
+
+ * A lazy future remains a generic future until it is launched, which means
+   it is not assigned a future backend class until launched.
+
+NEW FEATURES:
+
+ * Now cluster futures use 'homogeneous = NULL' as the default instead of
+   'homogeneous = TRUE'.  The new default will result in the 'parallelly'
+   package trying to infer whether TRUE or FALSE should be used based on
+   the 'workers' argument.
+ 
+BUG FIXES:
+
+ * Resolving a 'sequential' future without globals would result in internal
+   several '...future.*' objects being written to the calling environment,
+   which might be the global environment.
+
+ * Transparent futures no longer warns about 'local = FALSE' being deprecated.
+   Although 'local=FALSE' is being deprecated, it is still used internally by
+   'transparent' futures for a while longer.  Please do not use 'transparent'
+   futures in production code and never in a package.
+
+ * remote() could produce an error on "object 'homogeneous' not found".
+
+DEPRECATED AND DEFUNCT:
+
+ * Argument 'value' of resolve() is defunct. Use 'result' instead.
+
+
 Version: 1.21.0 [2020-12-09]
 
 NEW FEATURES:
@@ -11,7 +43,7 @@ NEW FEATURES:
    and RngFutureError, respectively.  Both of these classes inherits from
    RngFutureCondition.
 
- * Now run-time errors from resolving a future take precendence over
+ * Now run-time errors from resolving a future take precedence over
    RngFutureError:s. That is, future({ rnorm(1); log("a") }, seed = FALSE)
    will signal an error 'log("a")' instead of an RNG error when option
    'future.rng.onMisuse' is set to "error".
