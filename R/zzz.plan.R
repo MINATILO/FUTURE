@@ -133,6 +133,20 @@ plan <- local({
   ## Stack of type of futures to use
   stack <- defaultStack
 
+  assert_no_disallowed_strategies <- function(stack) {
+    noplans <- getOption("future.plan.disallow")
+    if (length(noplans) == 0L) return()
+
+    for (kk in seq_along(stack)) {
+      evaluator <- stack[[kk]]
+      if (!inherits(evaluator, noplans)) next
+      clazz <- class(evaluator)[1]
+      if (!clazz %in% noplans) next  ## <== sic!
+
+      stop(FutureError(sprintf("Can not use %s in the future plan because it is on the list of future strategies that are not allow per option 'future.plan.disallow': %s", sQuote(clazz), paste(sQuote(noplans), collapse = ", "))))
+    }
+  }
+
   warn_about_multiprocess <- local({
     .warn <- TRUE
 
@@ -238,6 +252,8 @@ plan <- local({
       mprint(newStack)
     }
 
+    assert_no_disallowed_strategies(newStack)
+
     warn_about_multiprocess(newStack)
 
     stack <<- newStack
@@ -271,10 +287,20 @@ plan <- local({
     if (is.null(strategy) || identical(strategy, "next")) {
       ## Next future strategy?
       strategy <- stack[[1L]]
+
+      ## Does strategy support requested 'resources'?
+      resources <- list(...)$resources
+      if (inherits(resources, "formula")) {
+        if (!supportsResources(strategy, resources)) {
+          strategy <- sequential
+        }
+      }
+
       if (!inherits(strategy, "FutureStrategy")) {
         class(strategy) <- c("FutureStrategy", class(strategy))
       }
       stop_if_not(is.function(strategy))
+
       return(strategy)
     } else if (identical(strategy, "default")) {
       strategy <- getOption("future.plan", sequential)
@@ -540,4 +566,3 @@ resetWorkers.multicore <- function(x, ...) {
   FutureRegistry(reg, action = "collect-all", earlySignal = FALSE)
   stop_if_not(usedCores() == 0L)
 }
-

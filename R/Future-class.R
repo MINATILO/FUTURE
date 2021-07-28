@@ -122,7 +122,7 @@ Future <- function(expr = NULL, envir = parent.frame(), substitute = TRUE, stdou
   args <- list(...)
 
   if (!local && !isTRUE(args[["persistent"]])) {
-    .Deprecated(msg = "Using 'local = FALSE' for a future is deprecated and will soon be defunct and produce an error.", package = .packageName)
+    .Deprecated(msg = "Using 'local = FALSE' for a future is deprecated in future (>= 1.20.0) and will soon be defunct and produce an error.", package = .packageName)
   }
 
   core <- new.env(parent = emptyenv())
@@ -143,6 +143,25 @@ Future <- function(expr = NULL, envir = parent.frame(), substitute = TRUE, stdou
   core$local <- local
   core$lazy <- lazy
   core$asynchronous <- TRUE  ## Reserved for future version (Issue #109)
+
+  ## Resources?
+  resources <- args$resources
+  if (!is.null(resources)) {
+    ## BACKWARD COMPATIBILITY: future.batchtools already has an argument
+    ## 'resources' for passing batchtools "resources" arguments.
+    ## For legacy code, rename such arguments here
+    if (is.list(resources)) {
+      core$batchtools_resources <- resources
+    } else if (inherits(resources, "formula")) {
+      if (length(resources) != 2) {
+        stop("Argument 'resources' should be a RHS-only formula")
+      }
+      core$resources <- resources
+    } else {
+      stop("Argument 'resources' is not a formula: ",
+           sQuote(class(resources)[1]))
+    }
+  }
 
   ## Result
   core$result <- NULL
@@ -225,6 +244,12 @@ print.Future <- function(x, ...) {
     cat(sprintf("L'Ecuyer-CMRG RNG seed: c(%s)\n", paste(x$seed, collapse = ", ")))
   } else {
     cat("L'Ecuyer-CMRG RNG seed: <none> (seed = ", deparse(x$seed), ")\n", sep = "")
+  }
+
+  if (inherits(x$resources, "formula")) {
+    cat(sprintf("Resources: %s\n", deparse(x$resources, width.cutoff = 500L)))
+  } else {
+#    cat("Resources: <none>\n")
   }
 
   result <- x$result
@@ -310,13 +335,126 @@ assertOwner <- function(future, ...) {
 #' @export run
 #' @keywords internal
 run.Future <- function(future, ...) {
-  if (future$state != 'created') {
+  debug <- getOption("future.debug", FALSE)
+  if (debug) {
+    mdebug("run() for ", sQuote(class(future)[1]), " ...")
+    mdebug("- state: ", sQuote(future$state))
+    on.exit(mdebug("run() for ", sQuote(class(future)[1]), " ... done"), add = TRUE)
+  }
+
+  if (future$state != "created") {
     label <- future$label
     if (is.null(label)) label <- "<none>"
     msg <- sprintf("A future ('%s') can only be launched once.", label)
     stop(FutureError(msg, future = future))
   }
+
+  ## Sanity check: This method should only called for lazy futures
+  stop_if_not(future$lazy)
+
+  if (is.null(future$owner)) {
+    future$owner <- session_uuid()
+  } else {  
+    ## Be conservative for now; don't allow lazy futures created in another R
+    ## session to be launched. This will hopefully change later, but we won't
+    ## open this door until we understand the ramifications. /HB 2020-12-21
+    if (getOption("future.lazy.assertOwner", TRUE)) {
+      assertOwner(future)
+    } else {
+      future$owner <- session_uuid()
+    }
+  }
+
+  ## Get future backend that supports the requested resources
+  makeFuture <- plan("next", resources = future$resources)
+  if (debug) mdebug("- Future backend: ", paste(sQuote(class(makeFuture)), collapse = ", "))
+
+  ## AD HOC/WORKAROUND: /HB 2020-12-21
+  globals <- future$globals
+  packages <- future$packages
+  local <- future$local
+  if (!is.logical(local)) local <- TRUE
+  persistent <- future$persistent
+  if (!is.logical(persistent)) persistent <- FALSE
+
+  ## WORKAROUNDS: /HB 2020-12-25
+  tmpLazy <- TRUE
+  if (inherits(makeFuture, "transparent")) {
+    if (future$.defaultLocal) local <- FALSE
+    if (is.logical(globals)) {
+      globals <- FALSE
+    } else {
+      tmpLazy <- FALSE
+    }    
+  } else if (inherits(makeFuture, "cluster")) {
+    ## Make persistent=TRUE cluster futures default to local=FALSE
+    if (isTRUE(formals(makeFuture)$persistent)) {
+      persistent <- TRUE
+      if (future$.defaultLocal) local <- FALSE
+    }
+  }
+
+  ## Create temporary future for the select backend, but don't launch it
+  tmpFuture <- makeFuture(
+    future$expr, substitute = FALSE,
+    envir = future$envir,
+    lazy = tmpLazy,
+    stdout = future$stdout,
+    conditions = future$conditions,
+    globals = globals,
+    packages = packages,
+    seed = future$seed,
+    label = future$label,
+    calls = future$calls,
+    local = local,
+    persistent = persistent
+  )
+
+  if (debug) mdebug("- Future class: ", paste(sQuote(class(tmpFuture)), collapse = ", "))
+
+  ## AD HOC/SPECIAL:
+  ## If 'earlySignal=TRUE' was set explicitly when creating the future,
+  ## then override the plan, otherwise use what the plan() says
+  if (isTRUE(future$earlySignal)) tmpFuture$earlySignal <- TRUE
+
+  ## If 'gc=TRUE' was set explicitly when creating the future,
+  ## then override the plan, otherwise use what the plan() says
+  if (isTRUE(future$gc)) tmpFuture$gc <- TRUE
+
+  ## Copy the full state of this temporary future into the main one
+  ## This can be done because Future:s are environments and we can even
+  ## assign attributes such as the class to existing environments
   
+  if (debug) mdebugf("- Copy elements of temporary %s to final %s object ...", sQuote(class(tmpFuture)[1]), sQuote(class(future)[1]))
+  ## (a) Copy all elements
+  for (name in names(tmpFuture)) {
+    if (debug) mdebug("  - Field: ", sQuote(name))
+    future[[name]] <- tmpFuture[[name]]
+  }
+  if (debug) mdebugf("- Copy elements of temporary %s to final %s object ... done", sQuote(class(tmpFuture)[1]), sQuote(class(future)[1]))
+  ## (b) Copy all attributes
+  attributes(future) <- attributes(tmpFuture)
+
+  ## (c) Temporary future no longer needed
+  tmpFuture <- NULL
+
+  ## Launch the future?
+  if (future$lazy) {
+    if (debug) mdebug("- Launch lazy future ...")
+    future <- run(future)
+    if (debug) mdebug("- Launch lazy future ... done")
+  } else {
+    ## WORKAROUND: Make sure 'transparent' futures remain
+    ## lazy future if they were from the beginning /HB 2020-12-21
+    if (!tmpLazy) {
+      if (debug) mdebugf("- Fix: lazy %s was no longer lazy", class(future)[1])
+      future$lazy <- TRUE
+    }
+  }
+  
+  ## Sanity check: This method was only called for lazy futures
+  stop_if_not(future$state != "created", future$lazy)
+
   future
 }
 
@@ -398,19 +536,41 @@ result.Future <- function(future, ...) {
 
 #' @export
 resolved.Future <- function(x, run = TRUE, ...) {
+  debug <- getOption("future.debug", FALSE)
+  if (debug) {
+    mdebug("resolved() for ", sQuote(class(x)[1]), " ...")
+    on.exit(mdebug("resolved() for ", sQuote(class(x)[1]), " ... done"), add = TRUE)
+    mdebug("- state: ", sQuote(x$state))
+    mdebug("- run: ", run)
+  }
+  
   ## A lazy future not even launched?
   if (x$state == "created") {
-    if (run) x <- run(x)
-    return(FALSE)
+    if (!run) return(FALSE)
+    if (debug) mdebug("- run() ...")
+    x <- run(x)
+    if (debug) mdebug("- run() ... done")
+    if (debug) mdebug("- resolved() ...")
+    res <- resolved(x, ...)
+    if (debug) {
+      mdebug("- resolved: ", res)
+      mdebug("- resolved() ... done")
+    }
+    return(res)
   }
 
   ## Signal conditions early, iff specified for the given future
   ## Note, collect = TRUE will block here, which is intentional
   signalEarly(x, collect = TRUE, ...)
 
+  if (debug) mdebug("- result: ", sQuote(class(x$result)[1]))
   if (inherits(x$result, "FutureResult")) return(TRUE)
   
-  x$state %in% c("finished", "failed", "interrupted")
+  res <- (x$state %in% c("finished", "failed", "interrupted"))
+
+  if (debug) mdebug("- resolved: ", res)
+
+  res
 }
 
 

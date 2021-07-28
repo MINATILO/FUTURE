@@ -15,6 +15,33 @@
     mdebug(paste(c("Future-specific environment variables:", envs), collapse = "\n"))
   }
 
+  noplans <- getOption("future.plan.disallow")
+  if (is.null(noplans)) {
+    noplans <- trim(Sys.getenv("R_FUTURE_PLAN_DISALLOW"))
+    if (debug) mdebugf("R_FUTURE_PLAN_DISALLOW=%s", sQuote(noplans))
+    if (nzchar(noplans)) {
+      noplans <- strsplit(noplans, split = ",", fixed = TRUE)[[1]]
+      noplans <- trim(noplans)
+      options(future.plan.disallow = noplans)
+      mdebugf(" => options(future.plan.disallow = c(%s))",
+              paste(sQuote(noplans), collapse = ", "))
+    }
+  }
+
+  assertOwner <- getOption("future.lazy.assertOwner", NULL)
+  if (is.null(assertOwner)) {
+    assertOwner <- trim(Sys.getenv("R_FUTURE_LAZY_ASSERT_OWNER"))
+    if (debug) mdebugf("R_FUTURE_LAZY_ASSERT_OWNER=%s", sQuote(assertOwner))
+    if (nzchar(assertOwner)) {
+      assertOwner <- as.logical(toupper(assertOwner))
+      if (is.na(assertOwner)) {
+        stop("Environment variable 'R_FUTURE_LAZY_ASSERT_OWNER' must be a logical value: ", sQuote(Sys.getenv("R_FUTURE_LAZY_ASSERT_OWNER")))
+      }
+      options(future.lazy.assertOwner = assertOwner)
+      mdebugf(" => options(future.lazy.assertOwner = %s)", assertOwner)
+    }
+  }
+
   ## Does multiprocess resolve to multisession? If so, then
   ## plan(multiprocess) should initiate the workers.
   if (is.na(attr(multiprocess, "init", exact = TRUE))) {
